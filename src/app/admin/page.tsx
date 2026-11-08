@@ -1,0 +1,30 @@
+import { isAdmin, adminEnabled } from "@/lib/adminAuth";
+import { loginAction, logoutAction, orderAction, setStockAction } from "./actions";
+import { products } from "@/lib/catalog";
+import { getStock, movements } from "@/lib/inventory";
+import { auditLog, orders } from "@/lib/orders";
+import { formatCAD } from "@/lib/money";
+
+export const dynamic = "force-dynamic";
+export const metadata = { title: "Admin", robots: { index: false, follow: false } };
+const TABS = ["overview", "inventory", "orders", "catalog", "audit"] as const;
+
+export default async function Admin({ searchParams }: { searchParams: Promise<{ tab?: string }> }) {
+  if (!adminEnabled()) return (<div className="wrap max-w-2xl py-20"><h1 className="display text-5xl">Admin disabled</h1><p className="mt-4">Set <code>ADMIN_PASSWORD</code> and <code>ADMIN_SESSION_SECRET</code> (24+ chars) to enable the demo admin. Production should use Clerk roles; see docs/DEPLOYMENT.md.</p></div>);
+  if (!(await isAdmin())) return (<div className="wrap max-w-md py-20"><h1 className="display text-5xl">Admin</h1><form action={loginAction} className="mt-6 space-y-3"><label className="label" htmlFor="pw">Password</label><input id="pw" name="password" type="password" required autoComplete="current-password" className="h-12 w-full border border-black px-3" /><button className="btn btn-solid w-full">Sign in</button></form></div>);
+  const tab = (await searchParams).tab ?? "overview"; const os = [...orders().values()]; const paid = os.filter((o) => ["paid", "fulfilled"].includes(o.status));
+  const revenue = paid.reduce((n, o) => n + o.totalCents - o.refundedCents, 0); const low = products.flatMap((p) => p.variants.filter((v) => getStock(v.sku) > 0 && getStock(v.sku) <= 2).map((v) => ({ p, v })));
+  return (<div className="wrap py-10"><div className="flex flex-wrap items-center justify-between gap-4"><h1 className="display text-5xl">Control center</h1><form action={logoutAction}><button className="btn">Sign out</button></form></div>
+    <nav aria-label="Admin" className="mt-6 flex flex-wrap gap-2">{TABS.map((t) => <a key={t} href={`/admin?tab=${t}`} aria-current={tab === t} className={`btn ${tab === t ? "btn-solid" : ""}`}>{t}</a>)}</nav>
+    {tab === "overview" && <section className="mt-8"><p className="label text-mute">Live from this server instance. Orders reset on redeploy in demo mode (no database attached).</p>
+      <div className="grid-cols-1 mt-4 grid gap-4 sm:grid-cols-4">{[["Revenue (paid, net refunds)", formatCAD(revenue)], ["Orders", String(os.length)], ["Paid orders", String(paid.length)], ["Avg order value", paid.length ? formatCAD(Math.round(revenue / paid.length)) : "—"]].map(([l, v]) => (<div key={l} className="border border-black p-5"><p className="label text-mute">{l}</p><p className="display mt-3 text-4xl">{v}</p></div>))}</div>
+      <p className="label mt-4 text-mute">Conversion rate: not shown. No analytics provider is configured.</p>
+      <h2 className="label mt-8">Low-stock variants (≤ 2)</h2><ul className="mt-2 text-sm">{low.length ? low.map(({ p, v }) => <li key={v.sku}>{p.name} · US {v.sizeUS} · {getStock(v.sku)} left <span className="text-mute">({v.sku})</span></li>) : <li>None.</li>}</ul></section>}
+    {tab === "inventory" && <section className="mt-8 overflow-x-auto"><table className="w-full min-w-[640px] text-left text-sm"><thead><tr className="border-b border-black"><th className="py-2">SKU</th><th>Product</th><th>Size</th><th>Stock</th><th>Set</th></tr></thead><tbody>{products.flatMap((p) => p.variants.map((v) => (<tr key={v.sku} className="border-b border-black/10"><td className="py-2 font-mono text-xs">{v.sku}</td><td>{p.name}</td><td>{v.sizeUS}</td><td>{getStock(v.sku)}</td><td><form action={setStockAction} className="flex gap-1"><input type="hidden" name="sku" value={v.sku} /><input name="qty" type="number" min={0} defaultValue={getStock(v.sku)} aria-label={`Stock for ${v.sku}`} className="h-9 w-20 border border-black px-2" /><button className="btn !min-h-9 !px-3">Save</button></form></td></tr>)))}</tbody></table>
+      <h2 className="label mt-8">Recent inventory movements</h2><ul className="mt-2 font-mono text-xs">{movements().map((m, i) => <li key={i}>{m.at} {m.sku} {m.delta > 0 ? "+" : ""}{m.delta} {m.reason}</li>)}</ul></section>}
+    {tab === "orders" && <section className="mt-8">{os.length === 0 ? <p className="border border-dashed border-black/40 p-8">No orders yet. Orders created through checkout appear here.</p> : <ul className="space-y-4">{os.map((o) => (<li key={o.id} className="border border-black p-4"><div className="flex flex-wrap justify-between gap-2"><strong>{o.id}</strong><span className="label">{o.status} · {formatCAD(o.totalCents)}</span></div><p className="mt-1 text-sm text-mute">{o.lines.map((l) => `${l.name} US${l.sizeUS}×${l.qty}`).join(", ")}</p>
+      <form action={orderAction} className="mt-3 flex flex-wrap items-center gap-2"><input type="hidden" name="id" value={o.id} /><input name="tracking" placeholder="Tracking #" className="h-10 border border-black px-2" aria-label="Tracking number" /><label className="flex items-center gap-1 text-xs"><input type="checkbox" name="confirm" required />Confirm</label>{(["fulfil", "refund", "cancel"] as const).map((op) => <button key={op} name="op" value={op} className="btn !min-h-10 !px-3">{op}</button>)}</form></li>))}</ul>}</section>}
+    {tab === "catalog" && <section className="mt-8"><p className="label text-mute">Read-only in demo mode. Product CRUD ships with the Prisma/Postgres adapter.</p><ul className="mt-3 divide-y">{products.map((p) => <li key={p.slug} className="flex justify-between py-2 text-sm"><span>{p.name} <span className="text-mute">· {p.collection}</span></span><span>{formatCAD(p.priceCents)}</span></li>)}</ul></section>}
+    {tab === "audit" && <section className="mt-8"><ul className="font-mono text-xs">{auditLog().length ? auditLog().map((a, i) => <li key={i}>{a.at} · {a.actor} · {a.action} {a.detail}</li>) : <li>No events yet.</li>}</ul></section>}
+  </div>);
+}

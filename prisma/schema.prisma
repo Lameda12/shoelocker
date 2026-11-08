@@ -1,0 +1,192 @@
+// Target PostgreSQL schema (production adapter). The demo build runs on the in-process adapter in
+// src/lib/inventory.ts and orders.ts; this schema is the contract those modules mirror.
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum OrderStatus {
+  PENDING
+  PAID
+  FULFILLED
+  CANCELLED
+  REFUNDED
+  EXPIRED
+}
+
+enum ReservationState {
+  HELD
+  COMMITTED
+  RELEASED
+}
+
+model Brand {
+  id       String    @id @default(cuid())
+  name     String    @unique
+  products Product[]
+}
+
+model Collection {
+  id       String    @id @default(cuid())
+  slug     String    @unique
+  name     String
+  vault    Boolean   @default(false)
+  products Product[]
+}
+
+model Product {
+  id           String      @id @default(cuid())
+  slug         String      @unique
+  name         String
+  brandId      String
+  collectionId String?
+  category     String
+  gender       String
+  priceCents   Int
+  currency     String      @default("CAD")
+  releaseAt    DateTime?
+  description  String
+  brand        Brand       @relation(fields: [brandId], references: [id])
+  collection   Collection? @relation(fields: [collectionId], references: [id])
+  variants     Variant[]
+
+  @@index([category])
+  @@index([collectionId])
+  @@index([releaseAt])
+}
+
+model Variant {
+  id        String              @id @default(cuid())
+  sku       String              @unique
+  productId String
+  colorway  String
+  sizeUS    Decimal             @db.Decimal(3, 1)
+  onHand    Int                 @default(0)
+  reserved  Int                 @default(0)
+  product   Product             @relation(fields: [productId], references: [id])
+  movements InventoryMovement[]
+
+  @@unique([productId, colorway, sizeUS])
+}
+
+// Raw SQL migration adds: CHECK (onHand >= 0), CHECK (reserved >= 0 AND reserved <= onHand), CHECK (currency = 'CAD'), CHECK ("priceCents" >= 0).
+// reserve(): UPDATE "Variant" SET reserved = reserved + $qty WHERE id = $id AND onHand - reserved >= $qty (0 rows => sold out).
+
+model InventoryMovement {
+  id        String   @id @default(cuid())
+  variantId String
+  delta     Int
+  reason    String
+  refId     String?
+  at        DateTime @default(now())
+  variant   Variant  @relation(fields: [variantId], references: [id])
+
+  @@index([variantId, at])
+}
+
+model Reservation {
+  id        String            @id @default(cuid())
+  orderId   String            @unique
+  state     ReservationState  @default(HELD)
+  expiresAt DateTime
+  lines     ReservationLine[]
+
+  @@index([state, expiresAt])
+}
+
+model ReservationLine {
+  id            String      @id @default(cuid())
+  reservationId String
+  variantId     String
+  qty           Int
+  reservation   Reservation @relation(fields: [reservationId], references: [id])
+
+  @@unique([reservationId, variantId])
+}
+
+model Order {
+  id              String      @id @default(cuid())
+  number          String      @unique
+  status          OrderStatus @default(PENDING)
+  userId          String?
+  email           String?
+  subtotalCents   Int
+  shippingCents   Int
+  taxCents        Int
+  totalCents      Int
+  currency        String      @default("CAD")
+  stripeSessionId String?     @unique
+  createdAt       DateTime    @default(now())
+  paidAt          DateTime?
+  items           OrderItem[]
+  refunds         Refund[]
+
+  @@index([userId])
+  @@index([status, createdAt])
+}
+
+// Immutable price snapshot: name/price copied at order time, never joined back to live Product prices.
+model OrderItem {
+  id        String  @id @default(cuid())
+  orderId   String
+  sku       String
+  name      String
+  colorway  String
+  sizeUS    Decimal @db.Decimal(3, 1)
+  qty       Int
+  unitCents Int
+  order     Order   @relation(fields: [orderId], references: [id])
+}
+
+model Refund {
+  id             String   @id @default(cuid())
+  orderId        String
+  amountCents    Int
+  stripeRefundId String?  @unique
+  reason         String?
+  createdAt      DateTime @default(now())
+  order          Order    @relation(fields: [orderId], references: [id])
+}
+
+model PaymentEvent {
+  id          String    @id
+  type        String
+  receivedAt  DateTime  @default(now())
+  processedAt DateTime?
+}
+
+model Subscription {
+  id             String    @id @default(cuid())
+  email          String
+  topic          String
+  productId      String?
+  consentText    String
+  consentAt      DateTime  @default(now())
+  unsubscribedAt DateTime?
+
+  @@unique([email, topic, productId])
+}
+
+model FitProfile {
+  userId     String   @id
+  region     String
+  size       Decimal  @db.Decimal(3, 1)
+  width      String?
+  preference String?
+  known      Json?
+  updatedAt  DateTime @updatedAt
+}
+
+model AuditLog {
+  id     String   @id @default(cuid())
+  at     DateTime @default(now())
+  actor  String
+  action String
+  detail String
+
+  @@index([at])
+}
